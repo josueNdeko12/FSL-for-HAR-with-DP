@@ -7,6 +7,8 @@ This repository contains an implementation of a federated split learning model w
 
 The dataset used in this project is the Human Activity Recognition Using Smartphones Data Set. It contains sensor data collected from the accelerometers and gyroscopes of smartphones worn by 30 participants while performing six different activities.
 
+Link: https://archive.ics.uci.edu/dataset/240/human+activity+recognition+using+smartphones
+
 # Requirements
 
 Python 3.7+
