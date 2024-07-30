@@ -24,6 +24,6 @@ Training loop with federated aggregation of model weights and performance evalua
 # Usage
 
 To start the training process, download and extract the dataset, load the data, and train the model with federated learning:
-Uncomment the start() function call in the main script to run the training process.
+Run the main.py script to start the training process.
 
 This README provides a brief overview of the project, the dataset, key features, and usage instructions. Feel free to adjust the content as needed for your specific requirements.
