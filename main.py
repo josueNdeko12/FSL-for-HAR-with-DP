@@ -1,22 +1,20 @@
 import copy
-import os
 import time
-import numpy as np
 import matplotlib.pyplot as plt
 import urllib.request
-import zipfile
 from numpy import std, dstack
-from pandas import read_csv
-import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from loadData import *
+from utils import *
+from models import *
 
 # Adjustable parameters
-learning_rate = 0.001
-clients = 30
+learning_rate = 0.01
+clients = 10
 rounds = 100
 epsilon = 3 # Epsilon for noise addition
 delta = 1e-5  # Delta for noise addition
@@ -24,148 +22,11 @@ clip_norm = 10.0  # Clipping norm for gradient clipping
 use_dp = False # Boolean to control the use of differential privacy
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-dataset_url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/00240/UCI%20HAR%20Dataset.zip'
-dataset_dir = 'HARDataset'
-dataset_zip = 'UCI_HAR_Dataset.zip'
-
-
-# Function to download and extract the dataset
-def download_and_extract_dataset(url, dest_path, zip_path):
-    if not os.path.exists(dest_path):
-        print('Downloading dataset...')
-        urllib.request.urlretrieve(url, zip_path)
-        print('Extracting dataset...')
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(dest_path)
-        print('Dataset downloaded and extracted.')
-    else:
-        print('Dataset already exists.')
-
-
-# Function to load a single file as a numpy array
-def load_file(filepath):
-    dataframe = read_csv(filepath, header=None, delim_whitespace=True)
-    return dataframe.values
-
-
-# Function to load a list of files and return as a 3d numpy array
-def load_group(filenames, prefix=''):
-    loaded = list()
-    for name in filenames:
-        data = load_file(prefix + name)
-        loaded.append(data)
-    loaded = dstack(loaded)
-    return loaded
-
-
-# Function to load a dataset group (train or test)
-def load_dataset_group(group, prefix=''):
-    filepath = prefix + group + '/Inertial Signals/'
-    filenames = [
-        'total_acc_x_', 'total_acc_y_', 'total_acc_z_',
-        'body_acc_x_', 'body_acc_y_', 'body_acc_z_',
-        'body_gyro_x_', 'body_gyro_y_', 'body_gyro_z_'
-    ]
-    filenames = [filepath + name + group + '.txt' for name in filenames]
-    x = load_group(filenames)
-    y = load_file(prefix + group + '/y_' + group + '.txt')
-    return x, y
-
-
-# Function to load the entire dataset
-def load_dataset(prefix=''):
-    train_x, train_y = load_dataset_group('train', prefix + 'UCI HAR Dataset/')
-    test_x, test_y = load_dataset_group('test', prefix + 'UCI HAR Dataset/')
-    train_y = torch.eye(6)[train_y.squeeze() - 1]
-    test_y = torch.eye(6)[test_y.squeeze() - 1]
-    return train_x, train_y, test_x, test_y
-
-# LSTM model for client
-class ClientLSTM(nn.Module):
-    def __init__(self, input_shape):
-        super(ClientLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_shape[1], 100, batch_first=True)
-        self.dropout = nn.Dropout(0.5)
-
-    def forward(self, x):
-        x, _ = self.lstm(x)
-        x = self.dropout(x)
-        return x
-
-# LSTM model for server
-class ServerLSTM(nn.Module):
-    def __init__(self, input_shape, n_outputs):
-        super(ServerLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_shape, 50, batch_first=True)
-        self.fc = nn.Linear(50, n_outputs)
-
-    def forward(self, x):
-        x, _ = self.lstm(x)
-        x = self.fc(x[:, -1, :])
-        return x
-
-# Function to simulate client-side LSTM processing with optional differential privacy
-def client_processing(client_model, train_samples, use_dp=False, epsilon=0.0, delta=0.0):
-    train_samples = torch.tensor(train_samples, dtype=torch.float32).to(next(client_model.parameters()).device)
-    output = client_model(train_samples)
-    if use_dp:
-        output = add_gaussian_noise(output, epsilon, delta)
-    return output
-
-
-# Function to simulate server-side LSTM processing
-def server_processing(server_model, cut_input):
-    return server_model(cut_input)
-
-
-# Function to add Gaussian noise for differential privacy
-def add_gaussian_noise(data, epsilon, delta):
-    sigma = np.sqrt(2 * np.log(1.25 / delta)) / epsilon
-    noise = torch.normal(0, sigma, data.size()).to(data.device)
-    return data + noise
-
-# Function to clip gradients
-def clip_gradients(data, clip_norm):
-    norm = torch.norm(data, dim=1, keepdim=True)
-    norm = torch.clamp(norm, max=clip_norm)
-    return data / norm * clip_norm
-
-# Function to aggregate client model weights
-def aggregate_client_weights(client_models):
-    new_weights = []
-    for weights in zip(*[model.state_dict().values() for model in client_models]):
-        new_weights.append(torch.mean(torch.stack(list(weights)), dim=0))
-    return new_weights
-
-
-# Function to set the client model weights
-def set_client_weights(client_model, new_weights):
-    state_dict = client_model.state_dict()
-    for key, value in zip(state_dict.keys(), new_weights):
-        state_dict[key] = value
-    client_model.load_state_dict(state_dict)
-# Function to aggregate model weights
-def aggregate_weights(models):
-    avg_weights = copy.deepcopy(models[0].state_dict())
-    for key in avg_weights.keys():
-        avg_weights[key] = torch.mean(torch.stack([model.state_dict()[key].float() for model in models]), dim=0)
-    return avg_weights
-
-# Function to set the client model weights
-def set_model_weights(model, new_weights):
-    state_dict = model.state_dict()
-    for key, value in zip(state_dict.keys(), new_weights.values()):
-        state_dict[key] = value.clone()
-    model.load_state_dict(state_dict)
-
-
 # Function to train the Split Learning model with federated aggregation and optional differential privacy
-def train_split_learning(train_x, train_y, test_x, test_y, learning_rate, clients, rounds, epsilon, delta, clip_norm, use_dp):
+def train_fsl(train_x, train_y, test_x, test_y, learning_rate, clients, rounds, epsilon, delta, clip_norm, use_dp):
     verbose, epochs, batch_size = 0, 1, 64  # Training one epoch per round
     n_samples, n_timesteps, n_features = train_x.shape
     n_outputs = train_y.shape[1]
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create and compile global client model and server model
     global_client_model = ClientLSTM((n_timesteps, n_features)).to(device)
@@ -249,7 +110,6 @@ def train_split_learning(train_x, train_y, test_x, test_y, learning_rate, client
 
     return global_client_model, global_server_model, history
 
-
 # Function to print the accuracy, loss, and time as comma-separated lists
 def print_accuracy_loss_time_lists(history):
     accuracy_list = ', '.join([f"{acc * 100.0:.2f}" for acc in history['accuracy']])
@@ -259,7 +119,6 @@ def print_accuracy_loss_time_lists(history):
     print(f"Accuracy per round (%): {accuracy_list}")
     print(f"Loss per round: {loss_list}")
     print(f"Time per round (seconds): {time_list}")
-
 
 # Function to plot the confusion matrix
 def plot_confusion_matrix(client_model, server_model, test_x, test_y):
@@ -276,7 +135,6 @@ def plot_confusion_matrix(client_model, server_model, test_x, test_y):
     plt.xticks(rotation=90)  # Rotate x-axis labels vertically
     plt.title('Confusion Matrix')
     plt.show()
-
 
 # Function to plot the accuracy, loss, and time
 def plot_accuracy_loss_time(history):
@@ -306,20 +164,14 @@ def plot_accuracy_loss_time(history):
     plt.tight_layout()
     plt.show()
 
+#Start the training process
+download_and_extract_dataset(dataset_url, dataset_dir, dataset_zip)
+train_x, train_y, test_x, test_y = load_dataset(dataset_dir + '/')
 
-# Main function to start the training process
-def start():
-    # Download and extract the dataset
-    download_and_extract_dataset(dataset_url, dataset_dir, dataset_zip)
-    train_x, train_y, test_x, test_y = load_dataset(dataset_dir + '/')
-
-    client_model, server_model, history = train_split_learning(train_x, train_y, test_x, test_y,
-                                                               learning_rate=learning_rate, clients=clients,
-                                                               rounds=rounds, epsilon=epsilon, delta=delta,
-                                                               clip_norm=clip_norm, use_dp=use_dp)
-    #plot_confusion_matrix(client_model, server_model, test_x, test_y)
-    print_accuracy_loss_time_lists(history)
-    plot_accuracy_loss_time(history)
-
-# Uncomment to start the training process
-start()
+client_model, server_model, history = train_fsl(train_x, train_y, test_x, test_y,
+                                                            learning_rate=learning_rate, clients=clients,
+                                                            rounds=rounds, epsilon=epsilon, delta=delta,
+                                                            clip_norm=clip_norm, use_dp=use_dp)
+plot_confusion_matrix(client_model, server_model, test_x, test_y)
+print_accuracy_loss_time_lists(history)
+plot_accuracy_loss_time(history)
