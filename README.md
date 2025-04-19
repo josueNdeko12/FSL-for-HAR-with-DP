@@ -30,7 +30,7 @@ This README provides a brief overview of the project, the dataset, key features,
 
 
 # 💫 About Me:
-Former AI Research Intern | Honors CS | Dell Scholar | CDEP Scholar at FVSU | NSBE
+SDE intern @ Amazon | AI Research @ PNNL & UAH | Dell Scholar | CDEP & Honors CS @ FVSU
 
 
 # 💻 Tech Stack:
